@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4}
+    volumes:
+      - ./backend:/app
+    command: uvicorn src.server:app --host 0.0.0.0 --port 8000 --reload

@@ -1,0 +1,151 @@
+.go-board-container {
+  display: flex;
+  gap: 8px;
+  padding: 20px;
+}
+
+.coordinates-left {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  height: 100%;
+  padding-top: 16px;
+}
+
+.coordinates-bottom {
+  display: flex;
+  justify-content: space-around;
+  padding-bottom: 8px;
+}
+
+.coord-label {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #666;
+  font-family: monospace;
+}
+
+.coord-label.left {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+}
+
+.board-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.board-grid {
+  display: grid;
+  grid-template-columns: repeat(19, 32px);
+  grid-template-rows: repeat(19, 32px);
+  gap: 0;
+  background-color: #dcb35c; /* 传统木色 */
+  border: 2px solid #8b4513;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  position: relative;
+}
+
+.board-cell {
+  width: 32px;
+  height: 32px;
+  position: relative;
+  cursor: pointer;
+  border: none;
+}
+
+.board-cell.occupied {
+  cursor: default;
+}
+
+.board-cell.hover:not(.occupied)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 28px;
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 50%;
+}
+
+.grid-line {
+  position: absolute;
+  background-color: #333;
+}
+
+.grid-line.horizontal {
+  width: 100%;
+  height: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 0;
+}
+
+.grid-line.vertical {
+  height: 100%;
+  width: 1px;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 0;
+}
+
+.star-point {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  background-color: #333;
+  border-radius: 50%;
+  z-index: 1;
+}
+
+.stone {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+  transition: transform 0.1s ease;
+}
+
+.stone.B {
+  background: radial-gradient(circle at 30% 30%, #555, #000);
+}
+
+.stone.W {
+  background: radial-gradient(circle at 30% 30%, #fff, #ddd);
+  border: 1px solid #999;
+}
+
+.stone.last-move::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 8px;
+  height: 8px;
+  background-color: rgba(255, 0, 0, 0.6);
+  border-radius: 50%;
+}
+
+.stone.current-turn {
+  transform: translate(-50%, -50%) scale(1.05);
+}
+
+/* AI 思考时禁用棋盘 */
+.board-cell:has(+ .board-cell.hover) {
+  /* 无 */
+}
