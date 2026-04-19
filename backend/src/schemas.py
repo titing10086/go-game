@@ -23,6 +23,7 @@ class GameState(BaseModel):
     captured_stones: Dict[str, int] = {"B": 0, "W": 0}  # 提子数
     is_game_over: bool = False
     winner: Optional[str] = None
+    board: Optional[List[List[Optional[str]]]] = None  # 棋盘状态：null/"B"/"W"
 
 
 class LLMConfig(BaseModel):

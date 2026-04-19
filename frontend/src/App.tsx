@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import Board from './components/Board';
-import { createInitialGameState, placeStone, BOARD_SIZE } from './utils/board';
+import { createInitialGameState, positionToCoordinate } from './utils/board';
 import { GameState, GAME_MODES, LLMConfig } from './types';
 import './App.css';
 
@@ -15,27 +15,61 @@ function App() {
     maxTokens: 512,
   });
   const [aiThinking, setAiThinking] = useState<boolean>(false);
+  const [gameId, setGameId] = useState<string | null>(null);
 
   const handleStonePlaced = useCallback(
-    (x: number, y: number) => {
-      if (gameState.currentPlayer === 'B' || mode !== 'pve') {
-        // 玩家执黑或非人机模式，玩家可以落子
-        const result = placeStone(gameState, x, y);
-        if (result.success) {
-          setGameState({ ...gameState });
+    async (x: number, y: number) => {
+      if (!gameId) {
+        alert('请先开始游戏');
+        return;
+      }
+
+      // 将索引转换为围棋坐标
+      const coord = positionToCoordinate(x, y);
+      if (!coord) return;
+
+      try {
+        const response = await fetch(`/api/game/${gameId}/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ coordinate: coord }),
+        });
+        if (response.ok) {
+          const newState = await response.json();
+          setGameState(newState);
         } else {
-          alert(result.error);
+          const err = await response.json();
+          alert(err.detail || '落子失败');
         }
+      } catch (error) {
+        console.error('Move failed:', error);
+        alert('网络错误，请重试');
       }
     },
-    [gameState, mode]
+    [gameId]
   );
 
   const startNewGame = async (selectedMode: string) => {
-    setGameState(createInitialGameState());
-    setMode(selectedMode);
-    setAiThinking(false);
-    // TODO: 通知后端开始新游戏（AI mode）
+    try {
+      const response = await fetch('/api/game/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: selectedMode, board_size: 19 }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setGameId(data.game_id);
+        setGameState(data.state);
+        setMode(selectedMode);
+        setAiThinking(false);
+      } else {
+        alert('无法开始新游戏');
+      }
+    } catch (error) {
+      console.error('Start game failed:', error);
+      alert('网络错误，请重试');
+    }
   };
 
   const requestAiMove = async () => {
@@ -55,27 +89,8 @@ function App() {
   };
 
   const handleUndo = () => {
-    if (gameState.history.length > 0) {
-      const newHistory = [...gameState.history];
-      newHistory.pop();
-      const newBoard = createInitialGameState().board;
-      // 重建棋盘（简化实现）
-      for (const move of newHistory) {
-        const [x, y] = coordinateToPosition(move.coordinate)!;
-        if (newBoard[x][y].color === null) {
-          newBoard[x][y].color = move.color;
-        }
-      }
-      const lastMove = newHistory[newHistory.length - 1];
-      const nextPlayer = lastMove ? (lastMove.color === 'B' ? 'W' : 'B') : 'B';
-
-      setGameState({
-        ...gameState,
-        board: newBoard,
-        history: newHistory,
-        currentPlayer: nextPlayer,
-      });
-    }
+    // TODO: 后端实现悔棋 API 后启用
+    alert('悔棋功能开发中');
   };
 
   return (
@@ -104,7 +119,7 @@ function App() {
 
           <div className="panel">
             <h3>游戏控制</h3>
-            <button onClick={() => setGameState(createInitialGameState())}>重新开始</button>
+            <button onClick={() => startNewGame(mode)}>重新开始</button>
             <button onClick={handleUndo} disabled={gameState.history.length === 0}>
               悔棋
             </button>

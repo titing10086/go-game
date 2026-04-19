@@ -11,11 +11,12 @@ import uvicorn
 from .config import settings
 from .schemas import GameState, Move, AIRequest, AIResponse, WSMessage
 
-# 导入游戏引擎（稍后实现）
-# from .engine.go_rules import Board
+# 导入游戏引擎
+from .engine.go_rules import GoRules, RuleViolation
 
 # 全局游戏状态存储（简单实现，生产环境应使用 Redis/DB）
-games: Dict[str, GameState] = {}
+# 现在存储 GoRules 引擎实例
+games: Dict[str, GoRules] = {}
 active_connections: Dict[str, List[WebSocket]] = {}
 
 
@@ -73,31 +74,70 @@ async def start_game(
 
     game_id = str(uuid.uuid4())[:8]
 
-    game_state = GameState(
+    # 创建规则引擎实例
+    game_rules = GoRules(board_size=board_size)
+
+    games[game_id] = game_rules
+
+    # 返回初始状态（使用 GameState 模型以兼容前端）
+    initial_state = GameState(
         game_id=game_id,
         board_size=board_size,
-        current_player="B",  # 黑棋先行
+        current_player=game_rules.current_player,
         history=[],
         captured_stones={"B": 0, "W": 0},
         is_game_over=False,
     )
 
-    games[game_id] = game_state
-
     return {
         "game_id": game_id,
-        "state": game_state.model_dump(),
+        "state": initial_state.model_dump(),
         "mode": mode,
     }
 
 
 @app.get("/api/game/{game_id}/state")
 async def get_game_state(game_id: str):
-    """获取当前游戏状态"""
+    """获取当前游戏状态（从 GoRules 引擎重建 GameState）"""
     if game_id not in games:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    return games[game_id].model_dump()
+    rules = games[game_id]
+    board_state = rules.board
+
+    # 从 board.moves 重建历史
+    history = []
+    captured_B = 0
+    captured_W = 0
+    for move in board_state.moves:
+        # 将 (x,y) 转换为坐标字符串
+        coord = rules.position_to_coordinate(move.x, move.y)
+        move_item = Move(
+            color=move.color,
+            coordinate=coord,
+            timestamp=move.timestamp
+        )
+        history.append(move_item)
+
+        # 累计提子数
+        if move.color == "B":
+            captured_W += len(move.captured)
+        else:
+            captured_B += len(move.captured)
+
+    # 构建 GameState 返回
+    state = GameState(
+        game_id=game_id,
+        board_size=rules.board.size,
+        current_player=rules.current_player,
+        history=history,
+        captured_stones={"B": captured_B, "W": captured_W},
+        is_game_over=rules.is_game_over,
+        winner=rules.winner,
+        board=rules.board.to_grid_array(),  # 包含棋盘状态
+    )
+
+    return state.model_dump()
 
 
 @app.post("/api/game/{game_id}/move")
@@ -115,19 +155,18 @@ async def make_move(game_id: str, coordinate: str, player: str):
     if game_id not in games:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    game = games[game_id]
+    rules = games[game_id]
 
-    # TODO: 使用规则引擎验证落子合法性
-    # board.place(x, y, player)
+    # 确保 player 是当前回合的玩家（可选，严格模式）
+    if player != rules.current_player:
+        raise HTTPException(status_code=400, detail=f"Not {player}'s turn")
 
-    # 临时：直接记录
-    move = Move(color=player, coordinate=coordinate, timestamp=datetime.now())
-    game.history.append(move)
-
-    # 切换玩家
-    game.current_player = "W" if player == "B" else "B"
-
-    return game.model_dump()
+    try:
+        # 使用规则引擎执行落子
+        success, captured_coords, msg = rules.play_move_by_coord(coordinate)
+        return await get_game_state(game_id)  # 返回完整状态
+    except RuleViolation as e:
+        raise HTTPException(status_code=400, detail=e.reason)
 
 
 @app.websocket("/ws/game/{game_id}")
@@ -159,36 +198,71 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str):
             if message_type == "move":
                 # 处理落子
                 coordinate = data["data"]["coordinate"]
-                player = games[game_id].current_player
+                rules = games[game_id]
+                player = rules.current_player
 
-                # 更新状态
-                move = Move(color=player, coordinate=coordinate)
-                games[game_id].history.append(move)
-                games[game_id].current_player = "W" if player == "B" else "B"
+                try:
+                    # 使用规则引擎落子
+                    success, captured_coords, msg = rules.play_move_by_coord(coordinate)
 
-                # 广播给所有连接
-                await broadcast_move(game_id, player, coordinate)
+                    # 广播落子消息
+                    await broadcast_move(game_id, player, coordinate)
+
+                    # 广播提子信息（可选）
+                    if captured_coords:
+                        await broadcast_message(game_id, "capture", {
+                            "player": player,
+                            "stones": captured_coords
+                        })
+
+                except RuleViolation as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "data": {"message": e.reason}
+                    })
+
+            elif message_type == "pass":
+                # 虚手
+                rules = games[game_id]
+                rules.play_pass()
+                # 广播
+                await broadcast_message(game_id, "pass", {
+                    "player": rules.current_player
+                })
+                # 检查游戏是否结束
+                if rules.is_game_over:
+                    await broadcast_game_over(game_id, rules.winner)
 
             elif message_type == "ai_analyze":
                 # 请求 AI 分析（暂不实现）
                 pass
 
     except WebSocketDisconnect:
-        active_connections[game_id].remove(websocket)
+        if game_id in active_connections and websocket in active_connections[game_id]:
+            active_connections[game_id].remove(websocket)
     except Exception as e:
         print(f"WebSocket error: {e}")
 
 
-async def broadcast_move(game_id: str, player: str, coordinate: str):
-    """广播落子消息给该游戏的所有客户端"""
-    message = WSMessage(type="move", data={"color": player, "coordinate": coordinate})
-
+async def broadcast_message(game_id: str, msg_type: str, data: dict):
+    """广播通用消息"""
+    message = WSMessage(type=msg_type, data=data)
     if game_id in active_connections:
         for ws in active_connections[game_id]:
             try:
                 await ws.send_json(message.model_dump())
             except:
-                pass  # 客户端断开则忽略
+                pass
+
+
+async def broadcast_move(game_id: str, player: str, coordinate: str):
+    """广播落子消息给该游戏的所有客户端"""
+    await broadcast_message(game_id, "move", {"color": player, "coordinate": coordinate})
+
+
+async def broadcast_game_over(game_id: str, winner: Optional[str]):
+    """广播游戏结束"""
+    await broadcast_message(game_id, "game_over", {"winner": winner})
 
 
 if __name__ == "__main__":
