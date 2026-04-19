@@ -4,6 +4,20 @@ import { createInitialGameState, positionToCoordinate } from './utils/board';
 import { GameState, GAME_MODES, LLMConfig } from './types';
 import './App.css';
 
+const COLUMN_LABELS = 'ABCDEFGHJKLMNOPQRST';
+
+function coordinateToPosition(coord: string): [number, number] | null {
+  const match = coord.match(/^([A-HJ-T])([1-9]|1[0-9])$/i);
+  if (!match) return null;
+  const col = match[1].toUpperCase();
+  const row = parseInt(match[2], 10);
+  const x = COLUMN_LABELS.indexOf(col);
+  if (x === -1) return null;
+  const y = row - 1;
+  if (y < 0 || y >= 19) return null;
+  return [x, y];
+}
+
 function App() {
   const [gameState, setGameState] = useState<GameState>(createInitialGameState());
   const [mode, setMode] = useState<string>('pve');
@@ -74,15 +88,42 @@ function App() {
 
   const requestAiMove = async () => {
     if (aiThinking) return;
+    if (!llmConfig.apiKey) {
+      alert('请先填写 API Key');
+      return;
+    }
     setAiThinking(true);
-
     try {
-      // TODO: 调用后端 AI API
-      // const response = await fetch('/api/ai/move', { ... });
-      // 暂时使用模拟延迟
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      // 模拟 AI 落子
-      console.log('AI would make a move here');
+      const response = await fetch('/api/ai/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          game_state: gameState,
+          mode: 'play',
+          llm_config: llmConfig,
+        }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const move = data.move;
+        if (move) {
+          const pos = coordinateToPosition(move);
+          if (pos) {
+            const [x, y] = pos;
+            await handleStonePlaced(x, y);
+          } else {
+            alert(`AI 返回了无效坐标: ${move}`);
+          }
+        } else {
+          alert('AI 未返回有效着法');
+        }
+      } else {
+        const err = await response.json();
+        alert(err.detail || 'AI 请求失败');
+      }
+    } catch (error) {
+      console.error('AI move failed:', error);
+      alert('网络错误');
     } finally {
       setAiThinking(false);
     }

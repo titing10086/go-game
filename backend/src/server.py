@@ -169,6 +169,28 @@ async def make_move(game_id: str, coordinate: str, player: str):
         raise HTTPException(status_code=400, detail=e.reason)
 
 
+@app.post("/api/ai/move")
+async def get_ai_move(request: AIRequest):
+    """
+    AI 着法建议
+
+    - 接收当前游戏状态、模式和 LLM 配置
+    - 返回 AI 的落子坐标（可选的实时分析）
+    """
+    from .agents.go_agent import GoAgent
+
+    # 简单的请求验证
+    if not request.llm_config or not request.llm_config.api_key:
+        raise HTTPException(status_code=400, detail="Missing llm_config.api_key")
+
+    agent = GoAgent()
+    try:
+        response = await agent.get_move(request.game_state, request.llm_config, request.mode)
+        return response.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI failed: {str(e)}")
+
+
 @app.websocket("/ws/game/{game_id}")
 async def websocket_endpoint(websocket: WebSocket, game_id: str):
     """
