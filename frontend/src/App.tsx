@@ -21,16 +21,36 @@ function coordinateToPosition(coord: string): [number, number] | null {
 function App() {
   const [gameState, setGameState] = useState<GameState>(createInitialGameState());
   const [mode, setMode] = useState<string>('pve');
-  const [llmConfig, setLLMConfig] = useState<LLMConfig>({
+
+  // AI 配置：分开存储黑方和白方
+  const [blackAiConfig, setBlackAiConfig] = useState<LLMConfig>({
     apiKey: '',
     apiBase: 'https://api.openai.com/v1',
     model: 'gpt-4',
     temperature: 0.7,
     maxTokens: 512,
   });
+  const [whiteAiConfig, setWhiteAiConfig] = useState<LLMConfig>({
+    apiKey: '',
+    apiBase: 'https://api.openai.com/v1',
+    model: 'gpt-4',
+    temperature: 0.7,
+    maxTokens: 512,
+  });
+
   const [aiThinking, setAiThinking] = useState<boolean>(false);
   const [gameId, setGameId] = useState<string | null>(null);
   const prevPlayerRef = useRef<string | null>(null);
+
+  // 获取当前应使用的 AI 配置
+  const getCurrentAiConfig = useCallback((): LLMConfig | null => {
+    if (mode === 'pve') {
+      return whiteAiConfig; // PVE: AI 作白方
+    } else if (mode === 'aivsai') {
+      return gameState.currentPlayer === 'B' ? blackAiConfig : whiteAiConfig;
+    }
+    return null;
+  }, [mode, gameState.currentPlayer, blackAiConfig, whiteAiConfig]);
 
   // 玩家手动落子
   const handleStonePlaced = useCallback(
@@ -64,9 +84,10 @@ function App() {
     [gameId]
   );
 
-  // AI 自动落子（后台调用）
+  // 触发生 AI 落子（自动调用）
   const triggerAiMove = useCallback(async () => {
-    if (aiThinking || !gameId || !llmConfig.apiKey || gameState.isGameOver) {
+    const config = getCurrentAiConfig();
+    if (aiThinking || !config || !config.apiKey || !gameId || gameState.isGameOver) {
       return;
     }
     setAiThinking(true);
@@ -77,7 +98,7 @@ function App() {
         body: JSON.stringify({
           game_state: gameState,
           mode: 'play',
-          llm_config: llmConfig,
+          llm_config: config,
         }),
       });
       if (response.ok) {
@@ -89,44 +110,64 @@ function App() {
             const [x, y] = pos;
             await handleStonePlaced(x, y);
           } else {
-            alert(`AI 返回了无效坐标: ${move}`);
+            console.warn('Invalid AI move:', move);
           }
         } else {
-          alert('AI 未返回有效着法');
+          console.warn('AI returned no move');
         }
       } else {
         const err = await response.json();
-        alert(err.detail || 'AI 请求失败');
+        console.error('AI move request failed:', err);
+        // 不弹出提示，避免打扰
       }
     } catch (error) {
       console.error('AI move failed:', error);
-      alert('网络错误');
     } finally {
       setAiThinking(false);
     }
-  }, [gameState, gameId, llmConfig, aiThinking, handleStonePlaced]);
+  }, [aiThinking, config, gameId, gameState.isGameOver, gameState, handleStonePlaced, getCurrentAiConfig]);
 
-  // 监听玩家回合变化，自动触发 AI
+  // 启用自动对战：监听从黑方轮到白方或反之
   useEffect(() => {
     const prev = prevPlayerRef.current;
-    // 检测从黑方轮到白方的转变
-    if (
-      mode === 'pve' &&
-      prev === 'B' &&
-      gameState.currentPlayer === 'W' &&
-      !aiThinking &&
-      !gameState.isGameOver &&
-      gameId &&
-      llmConfig.apiKey
-    ) {
+
+    // 需要满足：不在思考中、游戏未结束、gameId 存在
+    if (aiThinking || !gameId || gameState.isGameOver) {
+      prevPlayerRef.current = gameState.currentPlayer;
+      return;
+    }
+
+    let shouldTrigger = false;
+
+    if (mode === 'pve' && prev === 'B' && gameState.currentPlayer === 'W' && whiteAiConfig.apiKey) {
+      shouldTrigger = true;
+    } else if (mode === 'aivsai') {
+      if (prev === 'B' && gameState.currentPlayer === 'W' && whiteAiConfig.apiKey) {
+        shouldTrigger = true;
+      } else if (prev === 'W' && gameState.currentPlayer === 'B' && blackAiConfig.apiKey) {
+        shouldTrigger = true;
+      }
+    }
+
+    if (shouldTrigger) {
       const timer = setTimeout(() => {
         triggerAiMove();
-      }, 300);
+      }, 500); // 稍微长一点的延迟，避免 GPU 限制
       return () => clearTimeout(timer);
     }
-    // 更新上一次玩家记录
+
+    // 更新上一玩家记录
     prevPlayerRef.current = gameState.currentPlayer;
-  }, [gameState.currentPlayer, mode, aiThinking, gameState.isGameOver, gameId, llmConfig.apiKey, triggerAiMove]);
+  }, [
+    gameState.currentPlayer,
+    mode,
+    aiThinking,
+    gameState.isGameOver,
+    gameId,
+    blackAiConfig.apiKey,
+    whiteAiConfig.apiKey,
+    triggerAiMove,
+  ]);
 
   const startNewGame = async (selectedMode: string) => {
     try {
@@ -138,18 +179,22 @@ function App() {
 
       if (response.ok) {
         const data = await response.json();
-        setGameId(data.gameId || data.game_id); // 兼容旧接口
+        setGameId(data.gameId || data.game_id);
         setGameState(data.state);
         setMode(selectedMode);
         setAiThinking(false);
-        // 重置上一玩家记录
         prevPlayerRef.current = data.state.currentPlayer;
+
+        // AI vs AI 模式：若黑方 AI 配置已填，自动开始
+        if (selectedMode === 'aivsai' && blackAiConfig.apiKey) {
+          setTimeout(() => triggerAiMove(), 300);
+        }
       } else {
         alert('无法开始新游戏');
       }
     } catch (error) {
       console.error('Start game failed:', error);
-      alert('网络错误，请重试');
+      alert('网络错误');
     }
   };
 
@@ -187,10 +232,6 @@ function App() {
             <button onClick={handleUndo} disabled={gameState.history.length === 0}>
               悔棋
             </button>
-            {/* AI 落子按钮：仅在 PVE 且轮到 AI 时显示，也可手动触发 */}
-            {mode === 'pve' && gameState.currentPlayer === 'W' && !aiThinking && (
-              <button onClick={triggerAiMove}>AI 落子</button>
-            )}
             {aiThinking && <span className="thinking">AI 思考中...</span>}
           </div>
 
@@ -203,29 +244,62 @@ function App() {
 
           <div className="panel">
             <h3>AI 配置</h3>
-            <div className="form-group">
-              <label>API Key</label>
-              <input
-                type="password"
-                value={llmConfig.apiKey}
-                onChange={e => setLLMConfig({ ...llmConfig, apiKey: e.target.value })}
-                placeholder="sk-..."
-              />
-            </div>
-            <div className="form-group">
-              <label>Base URL</label>
-              <input
-                value={llmConfig.apiBase}
-                onChange={e => setLLMConfig({ ...llmConfig, apiBase: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>Model</label>
-              <input
-                value={llmConfig.model}
-                onChange={e => setLLMConfig({ ...llmConfig, model: e.target.value })}
-              />
-            </div>
+            {mode === 'aivsai' ? (
+              <>
+                <div className="form-group">
+                  <label>黑方 AI</label>
+                  <input
+                    type="password"
+                    value={blackAiConfig.apiKey}
+                    onChange={e => setBlackAiConfig({ ...blackAiConfig, apiKey: e.target.value })}
+                    placeholder="sk-..."
+                  />
+                  <input
+                    value={blackAiConfig.apiBase}
+                    onChange={e => setBlackAiConfig({ ...blackAiConfig, apiBase: e.target.value })}
+                  />
+                  <input
+                    value={blackAiConfig.model}
+                    onChange={e => setBlackAiConfig({ ...blackAiConfig, model: e.target.value })}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>白方 AI</label>
+                  <input
+                    type="password"
+                    value={whiteAiConfig.apiKey}
+                    onChange={e => setWhiteAiConfig({ ...whiteAiConfig, apiKey: e.target.value })}
+                    placeholder="sk-..."
+                  />
+                  <input
+                    value={whiteAiConfig.apiBase}
+                    onChange={e => setWhiteAiConfig({ ...whiteAiConfig, apiBase: e.target.value })}
+                  />
+                  <input
+                    value={whiteAiConfig.model}
+                    onChange={e => setWhiteAiConfig({ ...whiteAiConfig, model: e.target.value })}
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="form-group">
+                <label>AI 配置 (白方)</label>
+                <input
+                  type="password"
+                  value={whiteAiConfig.apiKey}
+                  onChange={e => setWhiteAiConfig({ ...whiteAiConfig, apiKey: e.target.value })}
+                  placeholder="sk-..."
+                />
+                <input
+                  value={whiteAiConfig.apiBase}
+                  onChange={e => setWhiteAiConfig({ ...whiteAiConfig, apiBase: e.target.value })}
+                />
+                <input
+                  value={whiteAiConfig.model}
+                  onChange={e => setWhiteAiConfig({ ...whiteAiConfig, model: e.target.value })}
+                />
+              </div>
+            )}
           </div>
         </div>
 
