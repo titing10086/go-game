@@ -4,6 +4,7 @@ FastAPI 服务器：主入口
 import os
 import sys
 from contextlib import asynccontextmanager
+from typing import Dict, List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -13,6 +14,9 @@ from .schemas import GameState, Move, AIRequest, AIResponse, WSMessage
 
 # 导入游戏引擎
 from .engine.go_rules import GoRules, RuleViolation
+
+# 导入 SGF 模块
+from .sgf import export_game_to_sgf, import_sgf_to_rules, parse_sgf_header
 
 # 全局游戏状态存储（简单实现，生产环境应使用 Redis/DB）
 # 现在存储 GoRules 引擎实例
@@ -97,21 +101,44 @@ async def start_game(
 
 
 @app.get("/api/game/{game_id}/state")
-async def get_game_state(game_id: str):
-    """获取当前游戏状态（从 GoRules 引擎重建 GameState）"""
+async def get_game_state(
+    game_id: str,
+    move_index: Optional[int] = None
+):
+    """
+    获取游戏状态
+
+    Args:
+        game_id: 游戏 ID
+        move_index: 可选，历史步数索引（从 0 开始）。如果提供，返回该步后的棋盘状态。
+    """
     if game_id not in games:
         raise HTTPException(status_code=404, detail="Game not found")
 
     rules = games[game_id]
-    board_state = rules.board
 
-    # 从 board.moves 重建历史
+    # 如果指定了 move_index，则在历史中重建到该步
+    target_rules = rules
+    if move_index is not None:
+        if move_index < 0 or move_index >= len(rules.board.moves):
+            raise HTTPException(status_code=400, detail="Invalid move_index")
+        # 创建一个新的 empty rules 实例，重放到指定步
+        target_rules = GoRules(board_size=rules.board.size)
+        for i, record in enumerate(rules.board.moves):
+            if i > move_index:
+                break
+            coord = rules.position_to_coordinate(record.x, record.y)
+            target_rules.play_move_by_coord(coord)
+
+    board_state = target_rules.board
+
+    # 从 board.moves 重建历史（到目标步）
     history = []
     captured_B = 0
     captured_W = 0
+    # 注意：target_rules.moves 只包含到目标步的记录
     for move in board_state.moves:
-        # 将 (x,y) 转换为坐标字符串
-        coord = rules.position_to_coordinate(move.x, move.y)
+        coord = target_rules.position_to_coordinate(move.x, move.y)
         move_item = Move(
             color=move.color,
             coordinate=coord,
@@ -119,25 +146,92 @@ async def get_game_state(game_id: str):
         )
         history.append(move_item)
 
-        # 累计提子数
         if move.color == "B":
             captured_W += len(move.captured)
         else:
             captured_B += len(move.captured)
 
-    # 构建 GameState 返回
+    state = GameState(
+        game_id=game_id,
+        board_size=board_state.size,
+        current_player=target_rules.current_player,
+        history=history,
+        captured_stones={"B": captured_B, "W": captured_W},
+        is_game_over=target_rules.is_game_over,
+        winner=target_rules.winner,
+        board=board_state.to_grid_array(),
+    )
+
+    return state.model_dump()
+
+
+@app.get("/api/game/{game_id}/sgf")
+async def export_sgf(game_id: str, black_player: str = "Black", white_player: str = "White", result: Optional[str] = None):
+    """导出游戏为 SGF 格式"""
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    rules = games[game_id]
+    sgf_content = export_game_to_sgf(rules, black_player, white_player, result)
+    return {"game_id": game_id, "sgf": sgf_content}
+
+
+@app.post("/api/game/import")
+async def import_sgf(sgf_content: str, black_name: str = "Black", white_name: str = "White"):
+    """
+    从 SGF 内容导入游戏
+
+    Args:
+        sgf_content: SGF 格式的棋谱文本
+        black_name: 黑方名称
+        white_name: 白方名称
+
+    Returns:
+        新创建的 game_id 和初始状态
+    """
+    try:
+        # 解析 SGF 并重建规则引擎
+        rules = import_sgf_to_rules(sgf_content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SGF import failed: {str(e)}")
+
+    game_id = str(uuid.uuid4())[:8]
+    games[game_id] = rules
+
+    # 返回当前状态
     state = GameState(
         game_id=game_id,
         board_size=rules.board.size,
         current_player=rules.current_player,
-        history=history,
-        captured_stones={"B": captured_B, "W": captured_W},
+        history=[
+            Move(
+                color=m.color,
+                coordinate=rules.position_to_coordinate(m.x, m.y),
+                timestamp=m.timestamp
+            ) for m in rules.board.moves
+        ],
+        captured_stones={"B": 0, "W": 0},  # 从 moves 中计算
         is_game_over=rules.is_game_over,
         winner=rules.winner,
-        board=rules.board.to_grid_array(),  # 包含棋盘状态
+        board=rules.board.to_grid_array(),
     )
 
-    return state.model_dump()
+    # 计算提子数（从历史记录中统计）
+    captured_B = 0
+    captured_W = 0
+    for move in rules.board.moves:
+        if move.color == "B":
+            captured_W += len(move.captured)
+        else:
+            captured_B += len(move.captured)
+    state.captured_stones = {"B": captured_B, "W": captured_W}
+
+    return {
+        "game_id": game_id,
+        "state": state.model_dump(),
+        "black_name": black_name,
+        "white_name": white_name,
+    }
 
 
 @app.post("/api/game/{game_id}/move")

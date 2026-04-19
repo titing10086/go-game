@@ -42,6 +42,13 @@ function App() {
   const [gameId, setGameId] = useState<string | null>(null);
   const prevPlayerRef = useRef<string | null>(null);
 
+  // 复盘模式状态
+  const [reviewState, setReviewState] = useState<GameState | null>(null);
+  const [reviewIndex, setReviewIndex] = useState<number>(-1); // -1 表示最新
+  const [analysis, setAnalysis] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // 获取当前应使用的 AI 配置
   const getCurrentAiConfig = useCallback((): LLMConfig | null => {
     if (mode === 'pve') {
@@ -67,7 +74,7 @@ function App() {
         const response = await fetch(`/api/game/${gameId}/move`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ coordinate: coord }),
+          body: JSON.stringify({ coordinate: coord, player: gameState.currentPlayer }),
         });
         if (response.ok) {
           const newState = await response.json();
@@ -125,7 +132,7 @@ function App() {
     } finally {
       setAiThinking(false);
     }
-  }, [aiThinking, config, gameId, gameState.isGameOver, gameState, handleStonePlaced, getCurrentAiConfig]);
+  }, [aiThinking, gameId, gameState.isGameOver, gameState, handleStonePlaced, getCurrentAiConfig]);
 
   // 启用自动对战：监听从黑方轮到白方或反之
   useEffect(() => {
@@ -185,6 +192,11 @@ function App() {
         setAiThinking(false);
         prevPlayerRef.current = data.state.currentPlayer;
 
+        // 重置复盘相关状态
+        setReviewState(null);
+        setReviewIndex(-1);
+        setAnalysis(null);
+
         // AI vs AI 模式：若黑方 AI 配置已填，自动开始
         if (selectedMode === 'aivsai' && blackAiConfig.apiKey) {
           setTimeout(() => triggerAiMove(), 300);
@@ -200,6 +212,123 @@ function App() {
 
   const handleUndo = () => {
     alert('悔棋功能开发中');
+  };
+
+  // 导入 SGF 文件
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    try {
+      const response = await fetch('/api/game/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sgf_content: text,
+          black_name: 'Black',
+          white_name: 'White',
+        }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setGameId(data.game_id);
+        setGameState(data.state);
+        setMode('review'); // 自动进入复盘模式
+        setReviewIndex(-1);
+        setReviewState(data.state);
+        setAnalysis(null);
+        alert('SGF 导入成功！');
+      } else {
+        const err = await response.json();
+        alert('导入失败: ' + (err.detail || '未知错误'));
+      }
+    } catch (error) {
+      console.error('SGF import failed:', error);
+      alert('导入失败，请重试');
+    } finally {
+      // 清空 input 以允许重复选择同一文件
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // 导出 SGF
+  const exportSGF = async () => {
+    if (!gameId) return;
+    try {
+      const response = await fetch(`/api/game/${gameId}/sgf?black_player=Black&white_player=White`);
+      if (response.ok) {
+        const data = await response.json();
+        const blob = new Blob([data.sgf], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `game_${gameId}.sgf`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        alert('导出失败');
+      }
+    } catch (error) {
+      console.error('SGF export failed:', error);
+      alert('导出失败');
+    }
+  };
+
+  // 获取历史状态（用于复盘）
+  const fetchReviewState = useCallback(async (index: number) => {
+    if (!gameId) return;
+    const url = index < 0
+      ? `/api/game/${gameId}/state`
+      : `/api/game/${gameId}/state?move_index=${index}`;
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        setReviewState(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch review state:', error);
+    }
+  }, [gameId]);
+
+  // 监听复盘索引变化
+  useEffect(() => {
+    if (mode === 'review' && gameId) {
+      fetchReviewState(reviewIndex);
+    }
+  }, [mode, gameId, reviewIndex, fetchReviewState]);
+
+  // AI 分析（复盘模式）
+  const runAnalysis = async () => {
+    if (!reviewState) return;
+    const config = whiteAiConfig.apiKey ? whiteAiConfig : blackAiConfig;
+    if (!config.apiKey) {
+      alert('请先配置 AI');
+      return;
+    }
+    setIsAnalyzing(true);
+    try {
+      const response = await fetch('/api/ai/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          game_state: reviewState,
+          mode: 'analyze',
+          llm_config: config,
+        }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setAnalysis(data.analysis || '无分析结果');
+      } else {
+        alert('分析失败');
+      }
+    } catch (error) {
+      console.error('Analysis failed:', error);
+      alert('分析失败');
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   return (
@@ -301,11 +430,52 @@ function App() {
               </div>
             )}
           </div>
+
+          {/* SGF 操作面板 */}
+          <div className="panel">
+            <h3>SGF 操作</h3>
+            <button onClick={() => fileInputRef.current?.click()}>导入 SGF</button>
+            <input
+              type="file"
+              accept=".sgf"
+              style={{ display: 'none' }}
+              ref={fileInputRef}
+              onChange={handleFileChange}
+            />
+            <button onClick={exportSGF} disabled={!gameId}>导出 SGF</button>
+          </div>
+
+          {/* 复盘控制面板 (仅在复盘模式显示) */}
+          {mode === 'review' && (
+            <div className="panel">
+              <h3>复盘控制</h3>
+              <div>
+                <label>步数: {reviewIndex + 1} / {gameState.history.length}</label><br/>
+                <input
+                  type="range"
+                  min="-1"
+                  max={gameState.history.length - 1}
+                  value={reviewIndex}
+                  onChange={e => setReviewIndex(parseInt(e.target.value))}
+                  disabled={!gameState.history.length}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <button onClick={runAnalysis} disabled={!reviewState || isAnalyzing} style={{ marginTop: '8px' }}>
+                {isAnalyzing ? '分析中...' : 'AI 分析'}
+              </button>
+              {analysis && (
+                <div className="analysis-output" style={{ marginTop: '8px' }}>
+                  <pre>{analysis}</pre>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="board-area">
           <Board
-            gameState={gameState}
+            gameState={mode === 'review' && reviewState ? reviewState : gameState}
             onStonePlaced={handleStonePlaced}
             disabled={aiThinking}
           />
