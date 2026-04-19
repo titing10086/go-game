@@ -1,9 +1,15 @@
 """
 Pydantic 数据模型
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+
+
+def to_camel_case(string: str) -> str:
+    """将 snake_case 转换为 camelCase"""
+    parts = string.split('_')
+    return parts[0] + ''.join(word.title() for word in parts[1:])
 
 
 class Move(BaseModel):
@@ -12,6 +18,9 @@ class Move(BaseModel):
     coordinate: str  # 如 "Q16"
     analysis: Optional[str] = None
     timestamp: Optional[datetime] = None
+
+    # 启用 camelCase 输出
+    model_config = ConfigDict(populate_by_name=True, alias_generator=to_camel_case)
 
 
 class GameState(BaseModel):
@@ -25,6 +34,9 @@ class GameState(BaseModel):
     winner: Optional[str] = None
     board: Optional[List[List[Optional[str]]]] = None  # 棋盘状态：null/"B"/"W"
 
+    # 启用 camelCase 输出
+    model_config = ConfigDict(populate_by_name=True, alias_generator=to_camel_case)
+
 
 class LLMConfig(BaseModel):
     """LLM 配置"""
@@ -34,6 +46,9 @@ class LLMConfig(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 512
 
+    # 启用 camelCase 输入/输出
+    model_config = ConfigDict(populate_by_name=True, alias_generator=to_camel_case)
+
 
 class AIRequest(BaseModel):
     """AI 走棋请求"""
@@ -41,12 +56,16 @@ class AIRequest(BaseModel):
     mode: str = "play"  # "play" 或 "analyze"
     llm_config: Optional[LLMConfig] = None
 
+    model_config = ConfigDict(populate_by_name=True, alias_generator=to_camel_case)
+
 
 class AIResponse(BaseModel):
     """AI 走棋响应"""
     move: str
     analysis: Optional[str] = None
     thinking_time: float = 0.0
+
+    model_config = ConfigDict(populate_by_name=True, alias_generator=to_camel_case)
 
 
 class WSMessage(BaseModel):

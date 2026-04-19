@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import Board from './components/Board';
 import { createInitialGameState, positionToCoordinate } from './utils/board';
 import { GameState, GAME_MODES, LLMConfig } from './types';
@@ -30,7 +30,9 @@ function App() {
   });
   const [aiThinking, setAiThinking] = useState<boolean>(false);
   const [gameId, setGameId] = useState<string | null>(null);
+  const prevPlayerRef = useRef<string | null>(null);
 
+  // 玩家手动落子
   const handleStonePlaced = useCallback(
     async (x: number, y: number) => {
       if (!gameId) {
@@ -38,7 +40,6 @@ function App() {
         return;
       }
 
-      // 将索引转换为围棋坐标
       const coord = positionToCoordinate(x, y);
       if (!coord) return;
 
@@ -63,33 +64,9 @@ function App() {
     [gameId]
   );
 
-  const startNewGame = async (selectedMode: string) => {
-    try {
-      const response = await fetch('/api/game/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: selectedMode, board_size: 19 }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setGameId(data.game_id);
-        setGameState(data.state);
-        setMode(selectedMode);
-        setAiThinking(false);
-      } else {
-        alert('无法开始新游戏');
-      }
-    } catch (error) {
-      console.error('Start game failed:', error);
-      alert('网络错误，请重试');
-    }
-  };
-
-  const requestAiMove = async () => {
-    if (aiThinking) return;
-    if (!llmConfig.apiKey) {
-      alert('请先填写 API Key');
+  // AI 自动落子（后台调用）
+  const triggerAiMove = useCallback(async () => {
+    if (aiThinking || !gameId || !llmConfig.apiKey || gameState.isGameOver) {
       return;
     }
     setAiThinking(true);
@@ -127,10 +104,56 @@ function App() {
     } finally {
       setAiThinking(false);
     }
+  }, [gameState, gameId, llmConfig, aiThinking, handleStonePlaced]);
+
+  // 监听玩家回合变化，自动触发 AI
+  useEffect(() => {
+    const prev = prevPlayerRef.current;
+    // 检测从黑方轮到白方的转变
+    if (
+      mode === 'pve' &&
+      prev === 'B' &&
+      gameState.currentPlayer === 'W' &&
+      !aiThinking &&
+      !gameState.isGameOver &&
+      gameId &&
+      llmConfig.apiKey
+    ) {
+      const timer = setTimeout(() => {
+        triggerAiMove();
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+    // 更新上一次玩家记录
+    prevPlayerRef.current = gameState.currentPlayer;
+  }, [gameState.currentPlayer, mode, aiThinking, gameState.isGameOver, gameId, llmConfig.apiKey, triggerAiMove]);
+
+  const startNewGame = async (selectedMode: string) => {
+    try {
+      const response = await fetch('/api/game/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: selectedMode, board_size: 19 }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setGameId(data.gameId || data.game_id); // 兼容旧接口
+        setGameState(data.state);
+        setMode(selectedMode);
+        setAiThinking(false);
+        // 重置上一玩家记录
+        prevPlayerRef.current = data.state.currentPlayer;
+      } else {
+        alert('无法开始新游戏');
+      }
+    } catch (error) {
+      console.error('Start game failed:', error);
+      alert('网络错误，请重试');
+    }
   };
 
   const handleUndo = () => {
-    // TODO: 后端实现悔棋 API 后启用
     alert('悔棋功能开发中');
   };
 
@@ -164,8 +187,9 @@ function App() {
             <button onClick={handleUndo} disabled={gameState.history.length === 0}>
               悔棋
             </button>
+            {/* AI 落子按钮：仅在 PVE 且轮到 AI 时显示，也可手动触发 */}
             {mode === 'pve' && gameState.currentPlayer === 'W' && !aiThinking && (
-              <button onClick={requestAiMove}>AI 落子</button>
+              <button onClick={triggerAiMove}>AI 落子</button>
             )}
             {aiThinking && <span className="thinking">AI 思考中...</span>}
           </div>

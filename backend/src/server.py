@@ -91,7 +91,7 @@ async def start_game(
 
     return {
         "game_id": game_id,
-        "state": initial_state.model_dump(),
+        "state": initial_state.model_dump(by_alias=True),
         "mode": mode,
     }
 
@@ -186,7 +186,7 @@ async def get_ai_move(request: AIRequest):
     agent = GoAgent()
     try:
         response = await agent.get_move(request.game_state, request.llm_config, request.mode)
-        return response.model_dump()
+        return response.model_dump(by_alias=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI failed: {str(e)}")
 
